@@ -4,6 +4,10 @@ import { Neo4jModule } from 'nest-neo4j';
 import { GraphModule } from './graph/graph.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { UserModule } from './user/user.module';
+import { AuthModule } from './auth/auth.module';
+import { ChatModule } from './chat/chat.module';
 
 @Module({
   imports: [
@@ -22,7 +26,21 @@ import { AppService } from './app.service';
       }),
     }),
 
+    TypeOrmModule.forRoot({
+      type: 'postgres',
+      host: 'postgres',
+      port: 5432,
+      username: 'myuser',
+      password: 'mypassword',
+      database: 'mydatabase',
+      autoLoadEntities: true,
+      synchronize: true, 
+    }), 
+
     GraphModule, // Knowledge graph module
+    UserModule, 
+    AuthModule, 
+    ChatModule,
   ],
   controllers: [AppController],  // Ensure this is included
   providers: [AppService],       // Ensure this is included

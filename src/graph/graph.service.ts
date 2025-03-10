@@ -63,7 +63,7 @@ export class GraphService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Store important keywords from openAI API response as graph nodes
-    async storeGraphData(message: any) {
+    async storeGraphData(message: any, userId: number) {
         const session = this.driver.session();
 
         const response = await axios.post(
@@ -101,10 +101,10 @@ export class GraphService implements OnModuleInit, OnModuleDestroy {
             // Merge all node from openAI response
             for (const node of data.nodes) {
                 await session.run(
-                `MERGE (n:Keyword {name: $name})
-                ON CREATE SET n.size = 1
+                `MERGE (n:Keyword {name: $name, userId: $userId})
+                ON CREATE SET n.size = 1, n.userId = $userId
                 ON MATCH SET n.size = n.size + 1 RETURN n`,
-                { name: node.toLowerCase() }
+                { name: node.toLowerCase(), userId: userId }
                 );
             }
 
@@ -112,36 +112,34 @@ export class GraphService implements OnModuleInit, OnModuleDestroy {
             for (const relationship of data.relationships) {
                 await session.run(
                 `
-                MATCH (a:Keyword {name: $source}), (b:Keyword {name: $target})
+                MATCH   (a:Keyword {name: $source, userId: $userId}), 
+                        (b:Keyword {name: $target, userId: $userId})
                 MERGE (a)-[:RELATED_TO]->(b)
                 `,
-                { source: relationship.source.toLowerCase(), target: relationship.target.toLowerCase() }
+                { source: relationship.source.toLowerCase(), target: relationship.target.toLowerCase() , userId: userId}
                 );
             }
 
             // Drop existing cluster
-            await session.run(`CALL gds.graph.exists('myGraph') YIELD exists
+            await session.run(`CALL gds.graph.exists('$userId') YIELD exists
                         WITH exists
                         WHERE exists
-                        CALL gds.graph.drop('myGraph') YIELD graphName
-                        RETURN graphName`);
+                        CALL gds.graph.drop('$userId') YIELD graphName
+                        RETURN graphName`, {userId: userId});
 
             // Assign graph name to gds in neo4j
             await session.run(`
                 CALL gds.graph.project(
-                    'myGraph', // Graph Name
+                    '$userId', // Graph Name
                     'Keyword', // Node Label
                     'RELATED_TO' // Relationship Type
                 );
-            `);
-                    
+            `, {userId: userId});
+
             // Reassign cluster id to each node
             await session.run(
-                `CALL gds.louvain.write('myGraph', { writeProperty: 'community' })`
-            );
-
-            // Assign cluster name
-            await this.getClusterName();
+                `CALL gds.louvain.write('$userId', { writeProperty: 'community' })`
+            , {userId: userId});
 
             return { message: 'Graph data stored successfully' };
         } finally {
@@ -150,12 +148,13 @@ export class GraphService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Method to assign cluster name
-    async getClusterName() {
+    async setClusterName(userId: number) {
         const session = this.driver.session();
         const result = await session.run(`
             MATCH (n:Keyword)
+            WHERE n.userId = $userId
             RETURN n.community AS community, COLLECT(n.name) AS keywords
-        `);
+        `, { userId: userId });
 
         const communities = result.records.map(record => ({
             community: record.get('community').toNumber(),
@@ -172,7 +171,7 @@ export class GraphService implements OnModuleInit, OnModuleDestroy {
             messages: [
                 {
                     role: 'system',
-                    content: `Return the answer in json format with: {"sent id": category}. Do not write any intro or outro in the text.`
+                    content: `Return the answer in json format with: {"sent id": category}, example: {"2": "Orange Juice", "3": "Information Request"}: . Do not write any intro or outro in the text.`
                 },
                 { role: 'user', content: prompt }
             ],
@@ -188,21 +187,40 @@ export class GraphService implements OnModuleInit, OnModuleDestroy {
 
         for (const [community, name] of Object.entries(data)) {
             await session.run(
-                `MATCH (n:Keyword) WHERE n.community = $community 
+                `MATCH (n:Keyword) WHERE n.community = $community AND n.userId = $userId
                 SET n.communityName = $name`,
-                { community: parseInt(community), name }
+                { community: parseInt(community), userId: userId, name }
             );
         }
+    }
 
-        return structuredData;
+    // Method to retrieve cluster name
+    async getClusterName(userId: number) {
+        const session = this.driver.session();
+
+        const nodesQuery = await session.run('MATCH (n) WHERE n.userId = $userId RETURN n', {userId: userId});
+        const nodes = nodesQuery.records.map(record => {
+            const node = record.get('n');
+            return {
+                id: node.identity.toNumber(),
+                name: node.properties.name,
+                type: node.labels[0],
+                community: node.properties.community.low,
+                size: node.properties.size.low,
+                cluster: node.properties.communityName
+            };
+        });
+
+
+        return { nodes };
     }
 
     // Method to retrieve all nodes and its relationship for knowledge graph data
-    async getGraphData(): Promise<any> {
+    async getGraphData(userId: number): Promise<any> {
         const session = this.driver.session();
         
         try {
-            const nodesQuery = await session.run('MATCH (n) RETURN n');
+            const nodesQuery = await session.run('MATCH (n) WHERE n.userId = $userId RETURN n', {userId: userId});
             const nodes = nodesQuery.records.map(record => {
                 const node = record.get('n');
                 return {
@@ -217,7 +235,7 @@ export class GraphService implements OnModuleInit, OnModuleDestroy {
 
             // Get all relationships
             const relQuery = await session.run(
-                'MATCH (a)-[r]->(b) RETURN a, r, b'
+                'MATCH (a)-[r]->(b) WHERE a.userId = $userId AND b.userId = $userId RETURN a, r, b', {userId: userId}
             );
             const links = relQuery.records.map(record => ({
                 source: record.get('a').identity.toNumber(),
@@ -232,10 +250,10 @@ export class GraphService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Method to clean (remove) all graph in databasse
-    async cleanDatabase(): Promise<string> {
+    async cleanDatabase(userId: number): Promise<string> {
         const session = this.driver.session();
         try {
-            await session.run('MATCH (n) DETACH DELETE n'); 
+            await session.run('MATCH (n) WHERE n.userId = $userId DETACH DELETE n', {userId: userId}); 
             return 'Database cleaned successfully';
         } catch (error) {
             console.error('Error cleaning database:', error);
