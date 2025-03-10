@@ -1,6 +1,5 @@
 import { Controller, Post, Body, Get, Param, UseGuards, Request } from '@nestjs/common';
 import { ChatService } from './chat.service';
-import { CreateMessageDto } from './dto/create-message.dto';
 import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
 
 @Controller('chat')
